@@ -1,7 +1,11 @@
 -- Synthetic Clinical Test Data (Strictly fictitious under HIPAA Safe Harbor testing standards)
 
+-- 1. Insert 10 Patient Master Records
 INSERT INTO patients (mrn, full_name, aadhaar_hash, date_of_birth, gender, phone_number, email_address, street_address, city, state, postal_code)
 VALUES
+('MRN-90210-01', 'Sunita Sharma', 'a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0', '1985-05-14', 'Female', '+91-98765-43210', 'sunita.sharma@example.com', 'Flat 304, Green Valley Apts, Sector 62', 'Noida', 'Uttar Pradesh', '201301'),
+('MRN-90210-02', 'Amit Verma', 'b2c3d4e5f6a17890123456789abcdef0123456789abcdef0123456789abcdef1', '1972-11-20', 'Male', '+91-91234-56789', 'amit.verma@example.org', '14/B Lake View Colony, Banjara Hills', 'Hyderabad', 'Telangana', '500034'),
+('MRN-90210-03', 'Johnathan Doe', 'c3d4e5f6a1b27890123456789abcdef0123456789abcdef0123456789abcdef2', '1990-03-08', 'Male', '+1-555-0199-234', 'john.doe@example.net', '742 Evergreen Terrace', 'Springfield', 'Oregon', '97477'),
 ('MRN-90210-04', 'Vikram Malhotra', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', '1979-04-12', 'Male', '+91-98112-44551', 'vikram.m@zenithenterprises.in', 'Flat 402, Palm Heights, Sector 62', 'Noida', 'Uttar Pradesh', '201309'),
 ('MRN-90210-05', 'Ananya Deshmukh', 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2', '1995-11-23', 'Female', '+91-99201-88231', 'ananya.desh@techinnovate.org', '12/A, Shivaji Park Road', 'Mumbai', 'Maharashtra', '400028'),
 ('MRN-90210-06', 'Robert J. Patterson', 'c893bad68927b457dbed39460e6afd62395d6ebd1343c2606cb07d799d449420', '1962-08-30', 'Male', '+1-617-555-0182', 'robert.patterson@bostonlegal.net', '742 Evergreen Terrace', 'Springfield', 'Massachusetts', '02138'),
@@ -11,8 +15,24 @@ VALUES
 ('MRN-90210-10', 'Marcus Vance', 'ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d', '2001-01-19', 'Non-Binary', '+1-415-555-0199', 'marcus.v@baycreative.io', '350 Mission St', 'San Francisco', 'California', '94105')
 ON CONFLICT (mrn) DO NOTHING;
 
+-- 2. Insert Matching Clinical Encounters
 INSERT INTO clinical_encounters (patient_id, encounter_date, attending_physician, department, icd10_code, diagnosis_name, systolic_bp, diastolic_bp, clinical_notes)
 VALUES
+(
+  (SELECT patient_id FROM patients WHERE mrn = 'MRN-90210-01'),
+  '2026-03-12', 'Dr. Rajesh Gupta', 'Oncology', 'C50.919', 'Malignant neoplasm of unspecified site of female breast', 128, 82,
+  'Patient Sunita Sharma, age 41, reported for cycle 3 adjuvant chemotherapy. Accompanied by her husband Rajesh Sharma (Senior Advocate at Delhi High Court). Patient mentioned taking metro from Noida Sector 62 daily. Tolerance to Paclitaxel is fair with mild peripheral neuropathy. Routine liver enzymes within normal limits.'
+),
+(
+  (SELECT patient_id FROM patients WHERE mrn = 'MRN-90210-02'),
+  '2026-03-10', 'Dr. Anjali Rao', 'Cardiology', 'I10', 'Essential (primary) hypertension', 142, 90,
+  'Amit Verma presented for follow-up of hypertension management. Patient works at Hitec City software park, reporting high stress levels. Advised dietary modifications, regular aerobic exercise, and adherence to Telmisartan 40mg once daily.'
+),
+(
+  (SELECT patient_id FROM patients WHERE mrn = 'MRN-90210-03'),
+  '2026-02-28', 'Dr. Sarah Sterling', 'General Medicine', 'E11.9', 'Type 2 diabetes mellitus without complications', 120, 80,
+  'Routine physical for Johnathan Doe. Fasting blood sugar slightly elevated at 134 mg/dL. Metformin 500mg daily continued. Annual lipid panel and ophthalmology screening ordered.'
+),
 (
   (SELECT patient_id FROM patients WHERE mrn = 'MRN-90210-04'),
   '2026-02-14', 'Dr. Ramesh Gupta', 'Neurology', 'G40.909', 'Epilepsy, unspecified', 128, 82,
