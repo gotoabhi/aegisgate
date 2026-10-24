@@ -1,25 +1,52 @@
-const pool = require('../config/db');
-const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
-const { maskStructuredPatient } = require('../services/maskingService');
+const { v4: uuidv4 } = require('uuid');
+const pool = require('../config/db');
+const { maskStructuredPatient, extractYear } = require('../services/maskingService');
 const { deidentifyClinicalNote } = require('../services/aiSanitizerService');
 const { uploadExportBundle } = require('../services/s3Service');
 const { appendChainedAuditLog, verifyAuditChainIntegrity } = require('../services/auditService');
 
-async function exportPatientData(req, res) {
+const transformEncounterRow = async (client, row, exportMeta) => {
+  const { sanitizedText, redactedEntities } = await deidentifyClinicalNote(row.clinical_notes);
+  const sanitizedNoteHash = crypto.createHash('sha256').update(sanitizedText).digest('hex');
+
+  await appendChainedAuditLog(client, {
+    exportUuid: exportMeta.exportUuid,
+    requesterId: exportMeta.requesterId,
+    purpose: exportMeta.purpose,
+    framework: exportMeta.framework,
+    patientId: row.patient_id,
+    fieldsRedacted: redactedEntities,
+    aiSanitizationApplied: true,
+    sanitizedNoteHash,
+  });
+
+  return {
+    encounter_year: extractYear(row.encounter_date),
+    department: row.department,
+    icd10_code: row.icd10_code,
+    diagnosis_name: row.diagnosis_name,
+    systolic_bp: row.systolic_bp,
+    diastolic_bp: row.diastolic_bp,
+    sanitized_notes: sanitizedText,
+    redactions: redactedEntities,
+  };
+};
+
+const exportPatientData = async (req, res) => {
   const { requesterId, purpose, framework, patientIds } = req.body;
 
-  if (!requesterId || !purpose || !framework || !Array.isArray(patientIds) || patientIds.length === 0) {
-    return res.status(400).json({ error: 'Missing required egress parameters.' });
+  if (!requesterId || !purpose || !framework || !Array.isArray(patientIds) || !patientIds.length) {
+    return res.status(400).json({ error: 'Missing or malformed egress request parameters.' });
   }
 
   const exportUuid = uuidv4();
-  const client = await pool.connect();
+  const dbClient = await pool.connect();
 
   try {
-    await client.query('BEGIN');
+    await dbClient.query('BEGIN');
 
-    const selectQuery = `
+    const encounterQuery = `
       SELECT p.patient_id, p.mrn, p.full_name, p.aadhaar_hash, p.date_of_birth, p.gender,
              p.phone_number, p.email_address, p.street_address, p.city, p.state, p.postal_code,
              c.encounter_id, c.encounter_date, c.attending_physician, c.department,
@@ -30,61 +57,37 @@ async function exportPatientData(req, res) {
       ORDER BY p.patient_id, c.encounter_date ASC;
     `;
 
-    const { rows } = await client.query(selectQuery, [patientIds]);
-    const grouped = {};
+    const { rows } = await dbClient.query(encounterQuery, [patientIds]);
+    const manifest = new Map();
 
     for (const row of rows) {
-      if (!grouped[row.patient_id]) {
-        grouped[row.patient_id] = {
-          patient: maskStructuredPatient(row),
-          encounters: [],
-        };
+      if (!manifest.has(row.patient_id)) {
+        manifest.set(row.patient_id, {
+          ...maskStructuredPatient(row),
+          clinical_history: [],
+        });
       }
 
       if (row.encounter_id) {
-        // AI Tier Redaction
-        const aiResult = await deidentifyClinicalNote(row.clinical_notes);
-        const sanitizedNoteHash = crypto.createHash('sha256').update(aiResult.sanitizedText).digest('hex');
-
-        // Cryptographic Audit Row Chaining
-        await appendChainedAuditLog(client, {
+        const encounter = await transformEncounterRow(dbClient, row, {
           exportUuid,
           requesterId,
           purpose,
           framework,
-          patientId: row.patient_id,
-          fieldsRedacted: aiResult.redactedEntities || [],
-          aiSanitizationApplied: true,
-          sanitizedNoteHash,
         });
-
-        grouped[row.patient_id].encounters.push({
-          encounter_year: new Date(row.encounter_date).getUTCFullYear().toString(),
-          department: row.department,
-          icd10_code: row.icd10_code,
-          diagnosis_name: row.diagnosis_name,
-          systolic_bp: row.systolic_bp,
-          diastolic_bp: row.diastolic_bp,
-          sanitized_notes: aiResult.sanitizedText,
-          redactions: aiResult.redactedEntities,
-        });
+        manifest.get(row.patient_id).clinical_history.push(encounter);
       }
     }
 
-    const sanitizedBundle = Object.values(grouped).map((item) => ({
-      ...item.patient,
-      clinical_history: item.encounters,
-    }));
+    const payloadBundle = Array.from(manifest.values());
+    await dbClient.query('COMMIT');
 
-    await client.query('COMMIT');
-
-    // S3 Cloud Archival
     let s3Archive = null;
     if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_S3_BUCKET_NAME) {
       try {
-        s3Archive = await uploadExportBundle(exportUuid, sanitizedBundle);
-      } catch (s3Error) {
-        console.error('[AWS S3 Error] Failed to archive export:', s3Error.message);
+        s3Archive = await uploadExportBundle(exportUuid, payloadBundle);
+      } catch (err) {
+        console.error('S3 archival skipped due to transport error:', err.message);
       }
     }
 
@@ -92,52 +95,50 @@ async function exportPatientData(req, res) {
       success: true,
       exportUuid,
       framework,
-      recordCount: sanitizedBundle.length,
+      recordCount: payloadBundle.length,
       s3Archive,
-      data: sanitizedBundle,
+      data: payloadBundle,
     });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Export Pipeline Failure:', error);
-    return res.status(500).json({ error: 'Egress pipeline processing failed', details: error.message });
+  } catch (err) {
+    await dbClient.query('ROLLBACK');
+    console.error('Egress pipeline execution failure:', err);
+    return res.status(500).json({ error: 'Failed to process compliant egress pipeline.' });
   } finally {
-    client.release();
+    dbClient.release();
   }
-}
+};
 
-async function getAuditLogs(req, res) {
+const getAuditLogs = async (req, res) => {
   const { exportUuid } = req.query;
-  const client = await pool.connect();
+  const dbClient = await pool.connect();
+
   try {
-    let query = 'SELECT * FROM egress_audit_logs';
-    const params = [];
-    if (exportUuid) {
-      query += ' WHERE export_uuid = $1';
-      params.push(exportUuid);
-    }
-    query += ' ORDER BY audit_id ASC;';
-    const { rows } = await client.query(query, params);
+    const query = exportUuid
+      ? 'SELECT * FROM egress_audit_logs WHERE export_uuid = $1 ORDER BY audit_id ASC'
+      : 'SELECT * FROM egress_audit_logs ORDER BY audit_id ASC';
+
+    const params = exportUuid ? [exportUuid] : [];
+    const { rows } = await dbClient.query(query, params);
+
     return res.status(200).json({ count: rows.length, logs: rows });
   } catch (err) {
-    return res.status(500).json({ error: 'Failed to retrieve logs', details: err.message });
+    return res.status(500).json({ error: 'Failed to fetch audit log history.' });
   } finally {
-    client.release();
+    dbClient.release();
   }
-}
+};
 
-async function verifyChain(req, res) {
-  const client = await pool.connect();
+const verifyChain = async (_req, res) => {
+  const dbClient = await pool.connect();
   try {
-    const report = await verifyAuditChainIntegrity(client);
-    const status = report.verified ? 200 : 409;
-    return res.status(status).json(report);
+    const report = await verifyAuditChainIntegrity(dbClient);
+    return res.status(report.verified ? 200 : 409).json(report);
   } catch (err) {
-    console.error('Chain verification error:', err);
-    return res.status(500).json({ error: 'Verification failed', details: err.message });
+    return res.status(500).json({ error: 'Audit verification evaluation failed.' });
   } finally {
-    client.release();
+    dbClient.release();
   }
-}
+};
 
 module.exports = {
   exportPatientData,

@@ -1,64 +1,53 @@
 const crypto = require('crypto');
 
-// Standard 64-character zero string representing the genesis block
-const GENESIS_HASH = '0'.repeat(64);
+const GENESIS_BLOCK_HASH = '0'.repeat(64);
 
-/**
- * Computes deterministic SHA-256 record hash.
- * All fields are coerced to trimmed strings to guarantee byte-for-byte reproducibility.
- */
-function computeRecordHash({
-  prevHash,
-  exportUuid,
-  requesterId,
-  purpose,
-  framework,
-  patientId,
-  sanitizedNoteHash,
-  timestamp,
-}) {
+const computeRecordHash = (params) => {
+  const {
+    prevHash,
+    exportUuid,
+    requesterId,
+    purpose,
+    framework,
+    patientId,
+    sanitizedNoteHash,
+    timestamp,
+  } = params;
+
   const payload = [
-    String(prevHash).trim(),
-    String(exportUuid).trim(),
-    String(requesterId).trim(),
-    String(purpose).trim(),
-    String(framework).trim(),
-    String(patientId).trim(),
-    String(sanitizedNoteHash).trim(),
-    String(timestamp).trim(),
-  ].join('|');
+    prevHash,
+    exportUuid,
+    requesterId,
+    purpose,
+    framework,
+    patientId,
+    sanitizedNoteHash,
+    timestamp,
+  ]
+    .map((val) => String(val ?? '').trim())
+    .join('|');
 
   return crypto.createHash('sha256').update(payload).digest('hex');
-}
+};
 
-/**
- * Appends a chained, tamper-evident audit row inside an active DB transaction.
- */
-async function appendChainedAuditLog(client, {
-  exportUuid,
-  requesterId,
-  purpose,
-  framework,
-  patientId,
-  fieldsRedacted,
-  aiSanitizationApplied,
-  sanitizedNoteHash,
-}) {
-  // Lock the latest row to safely handle concurrent exports
-  const lastRowResult = await client.query(`
-    SELECT record_hash 
-    FROM egress_audit_logs 
-    ORDER BY audit_id DESC 
-    LIMIT 1 
-    FOR UPDATE
-  `);
+const appendChainedAuditLog = async (client, entry) => {
+  const {
+    exportUuid,
+    requesterId,
+    purpose,
+    framework,
+    patientId,
+    fieldsRedacted,
+    aiSanitizationApplied,
+    sanitizedNoteHash,
+  } = entry;
 
-  const prevHash =
-    lastRowResult.rows.length > 0 && lastRowResult.rows[0].record_hash
-      ? lastRowResult.rows[0].record_hash
-      : GENESIS_HASH;
+  // Prevent concurrency bifurcations across parallel egress exports
+  const { rows } = await client.query(
+    'SELECT record_hash FROM egress_audit_logs ORDER BY audit_id DESC LIMIT 1 FOR UPDATE'
+  );
 
-  // Use fixed ISO timestamp without sub-millisecond drift
+  const prevHash = rows[0]?.record_hash || GENESIS_BLOCK_HASH;
   const timestamp = new Date().toISOString();
 
   const recordHash = computeRecordHash({
@@ -72,7 +61,7 @@ async function appendChainedAuditLog(client, {
     timestamp,
   });
 
-  const insertQuery = `
+  const query = `
     INSERT INTO egress_audit_logs (
       export_uuid, requester_id, purpose, compliance_framework,
       patient_id, fields_redacted, ai_sanitization_applied,
@@ -87,24 +76,21 @@ async function appendChainedAuditLog(client, {
     purpose,
     framework,
     patientId,
-    JSON.stringify(fieldsRedacted),
-    aiSanitizationApplied,
+    JSON.stringify(fieldsRedacted || []),
+    Boolean(aiSanitizationApplied),
     sanitizedNoteHash,
     prevHash,
     recordHash,
     timestamp,
   ];
 
-  const res = await client.query(insertQuery, values);
-  return res.rows[0];
-}
+  const result = await client.query(query, values);
+  return result.rows[0];
+};
 
-/**
- * Traverses audit log from genesis to head and verifies cryptographic continuity.
- */
-async function verifyAuditChainIntegrity(client) {
-  // Query ISO string directly via PostgreSQL to avoid Node.js Date timezone/millisecond conversion drift
-  const result = await client.query(`
+const verifyAuditChainIntegrity = async (client) => {
+  // Query deterministic UTC formatted ISO string to avoid Node Date rounding discrepancies
+  const { rows } = await client.query(`
     SELECT audit_id, export_uuid, requester_id, purpose, compliance_framework,
            patient_id, sanitized_note_hash, prev_hash, record_hash,
            to_char(exported_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS formatted_ts
@@ -112,26 +98,21 @@ async function verifyAuditChainIntegrity(client) {
     ORDER BY audit_id ASC
   `);
 
-  const logs = result.rows;
-  if (logs.length === 0) {
-    return { verified: true, chainLength: 0, message: 'Audit ledger is empty.' };
+  if (!rows.length) {
+    return { verified: true, chainLength: 0, message: 'Ledger is empty.' };
   }
 
-  let expectedPrevHash = GENESIS_HASH;
+  let expectedPrevHash = GENESIS_BLOCK_HASH;
 
-  for (let i = 0; i < logs.length; i++) {
-    const row = logs[i];
-
-    // Check 1: Does row's prev_hash match previous row's record_hash?
+  for (const row of rows) {
     if (row.prev_hash !== expectedPrevHash) {
       return {
         verified: false,
         tamperedAuditId: row.audit_id,
-        reason: `Broken chain link at audit_id ${row.audit_id}. Expected prev_hash '${expectedPrevHash}', found '${row.prev_hash}'.`,
+        reason: `Broken chain pointer at audit record ${row.audit_id}.`,
       };
     }
 
-    // Check 2: Recalculate hash of row data using PostgreSQL's stored timestamp
     const calculatedHash = computeRecordHash({
       prevHash: row.prev_hash,
       exportUuid: row.export_uuid,
@@ -147,7 +128,7 @@ async function verifyAuditChainIntegrity(client) {
       return {
         verified: false,
         tamperedAuditId: row.audit_id,
-        reason: `Data tampering detected at audit_id ${row.audit_id}. Payload hash mismatch.`,
+        reason: `Cryptographic payload mismatch at audit record ${row.audit_id}.`,
       };
     }
 
@@ -156,13 +137,14 @@ async function verifyAuditChainIntegrity(client) {
 
   return {
     verified: true,
-    chainLength: logs.length,
+    chainLength: rows.length,
     headHash: expectedPrevHash,
-    message: 'Cryptographic chain verification passed. Zero tampering detected.',
+    message: 'Chain verified intact.',
   };
-}
+};
 
 module.exports = {
+  computeRecordHash,
   appendChainedAuditLog,
   verifyAuditChainIntegrity,
 };

@@ -1,39 +1,34 @@
 const crypto = require('crypto');
 
-const SALT = process.env.PSEUDO_SALT || 'aegisgate-default-salt-2026';
+const HMAC_SECRET = process.env.PSEUDONYMIZATION_KEY || 'default-fallback-dev-key';
 
-function hashIdentifier(value) {
+const pseudonymizeIdentifier = (value) => {
   if (!value) return null;
-  return crypto.createHash('sha256').update(`${SALT}:${value}`).digest('hex').substring(0, 16);
-}
+  return crypto
+    .createHmac('sha256', HMAC_SECRET)
+    .update(String(value).trim())
+    .digest('hex');
+};
 
-function truncateToYear(dateString) {
-  if (!dateString) return null;
-  const date = new Date(dateString);
-  return date.getFullYear();
-}
+const extractYear = (dateInput) => {
+  if (!dateInput) return null;
+  const parsed = new Date(dateInput);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.getUTCFullYear().toString();
+};
 
-function maskStructuredPatient(rawPatient) {
+const maskStructuredPatient = (patient) => {
+  if (!patient) return null;
+
   return {
-    pseudoId: hashIdentifier(rawPatient.mrn),
-    birthYear: truncateToYear(rawPatient.date_of_birth),
-    gender: rawPatient.gender,
-    state: rawPatient.state, // State level retained under HIPAA Safe Harbor
-    clinicalEncounter: {
-      encounterYear: truncateToYear(rawPatient.encounter_date),
-      department: rawPatient.department,
-      icd10Code: rawPatient.icd10_code,
-      diagnosis: rawPatient.diagnosis_name,
-      vitals: {
-        systolicBp: rawPatient.systolic_bp,
-        diastolicBp: rawPatient.diastolic_bp,
-      },
-    },
+    pseudonymized_id: pseudonymizeIdentifier(patient.mrn),
+    birth_year: extractYear(patient.date_of_birth),
+    gender: patient.gender,
+    state: patient.state,
   };
-}
+};
 
 module.exports = {
-  hashIdentifier,
-  truncateToYear,
+  pseudonymizeIdentifier,
+  extractYear,
   maskStructuredPatient,
 };
