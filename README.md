@@ -7,6 +7,18 @@
 [![Terraform](https://img.shields.io/badge/IaC-Terraform-purple.svg)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+---
+
+## 📸 Live Gateway Execution & Cryptographic Verification
+
+A live capture of the AegisGate runtime environment executing compliant patient data egress and verifying cryptographic audit hash chain continuity:
+
+<p align="center">
+  <img src="docs/demo-desk.png" alt="AegisGate Live Execution & Cryptographic Verification" width="900" />
+</p>
+
+---
+
 **AegisGate** is a production-grade backend compliance gateway designed to safely de-identify and egress clinical trial and patient datasets to third-party research entities (e.g., Clinical Research Organizations / CROs). It enforces the **HIPAA Safe Harbor Method (45 CFR § 164.514)** and **India's Digital Personal Data Protection (DPDP) Act, 2023** via a dual-tier redaction pipeline, cryptographic pseudonymization, Merkle/blockchain-lite cryptographic audit hash chaining, and encrypted AWS S3 delivery.
 
 **AegisGate** is an open-source project. The name AegisGate is not a registered trademark.
@@ -20,6 +32,8 @@ This project is for educational and demonstration purposes. It is not a substitu
 ---
 
 ## Key Features
+
+
 
 - **Dual-Tier Sanitization Engine:**
   - **Tier 1 (Deterministic / Microsecond Latency):** Synchronous scrubbing of relational columns using Node.js `crypto` (HMAC-SHA256 for MRNs, date truncation to year, stripping direct identifiers like Aadhaar, phone, and email).
