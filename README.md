@@ -7,7 +7,7 @@
 [![Terraform](https://img.shields.io/badge/IaC-Terraform-purple.svg)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**AegisGate** is a production-grade backend compliance gateway designed to safely de-identify and export clinical trial and patient datasets to third-party research entities (e.g., Clinical Research Organizations / CROs). It enforces the **HIPAA Safe Harbor Method (45 CFR § 164.514)** and **India's Digital Personal Data Protection (DPDP) Act, 2023** via a dual-tier redaction pipeline, cryptographic pseudonymization, immutable audit logging, and encrypted AWS S3 delivery.
+**AegisGate** is a production-grade backend compliance gateway designed to safely de-identify and egress clinical trial and patient datasets to third-party research entities (e.g., Clinical Research Organizations / CROs). It enforces the **HIPAA Safe Harbor Method (45 CFR § 164.514)** and **India's Digital Personal Data Protection (DPDP) Act, 2023** via a dual-tier redaction pipeline, cryptographic pseudonymization, Merkle/blockchain-lite cryptographic audit hash chaining, and encrypted AWS S3 delivery.
 
 ---
 
@@ -16,14 +16,35 @@
 - **Dual-Tier Sanitization Engine:**
   - **Tier 1 (Deterministic / Microsecond Latency):** Synchronous scrubbing of relational columns using Node.js `crypto` (HMAC-SHA256 for MRNs, date truncation to year, stripping direct identifiers like Aadhaar, phone, and email).
   - **Tier 2 (AI Contextual Redaction):** High-throughput NLP redaction via Google Gemini (`gemini-3.5-flash-lite`) enforcing strict JSON output schemas. Replaces names, relations, locations, and facilities with categorical tags (`[PATIENT_NAME]`, `[FAMILY_MEMBER]`) while strictly preserving clinical parameters (diagnoses, staging, ICD-10 codes, medication names, and dosages).
-- **Compliance & Non-Repudiation:**
+- **Cryptographic Audit Hash Chaining (Non-Repudiation & Tamper-Evidence):**
+  - **Immutable Ledger:** Every audit row computes a cryptographic SHA-256 seal combining the prior row's `record_hash` (`prev_hash`), export metadata, sanitized payload digest, and timestamp.
+  - **Concurrency Safety:** Row-level locking (`SELECT ... FOR UPDATE`) prevents race conditions and chain bifurcation during concurrent multi-patient exports.
+  - **Zero-Trust Audit Verification:** Dedicated `GET /api/v1/egress/audit/verify` endpoint traverses the ledger from the genesis block to head, instantly pinpointing any manual alteration, truncation, or payload tampering.
+- **Compliance & Governance:**
   - **Purpose Limitation:** Enforces mandatory `purpose` validation on all egress requests under DPDP Act provisions.
-  - **Immutable Audit Logging:** Captures every egress transaction, requester identity, timestamp, field-level redaction telemetry, and an unalterable SHA-256 checksum of the exported payload.
 - **Secure Cloud Archival (Zero-Cost Free Tier Eligible):**
   - Exports encrypted at rest using Amazon S3-managed keys (`SSE-S3 AES-256`).
   - Delivers temporary, time-limited presigned URLs (3600-second TTL) rather than raw public endpoints.
 - **Infrastructure as Code (IaC):**
   - Includes Terraform configurations with S3 lifecycle policies (30-day auto-expiration) and least-privilege IAM policies.
+
+---
+
+## Cryptographic Hash Chaining Mechanism
+
+```text
+[ Genesis Block ]
+  prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+  record_hash = SHA256(prev_hash | export_uuid | requester_id | purpose | framework | patient_id | sanitized_note_hash | timestamp)
+         |
+         v
+[ Audit Row 1 ]
+  prev_hash = Genesis record_hash
+  record_hash = SHA256(prev_hash | Row 1 payload fields | timestamp)
+         |
+         v
+[ Audit Row N ] (Any retroactive tampering in Row 1..N breaks the chain and fails /audit/verify)
+```
 
 ---
 
@@ -49,7 +70,7 @@
 |     • Structured prompt with clinical preservation rules                 |
 |     +-----------------------------> [ Gemini 3.5 Flash Lite API ]        |
 |                                                                          |
-|  5. Audit Log Transaction (BEGIN ... INSERT ... COMMIT)                   |
+|  5. Cryptographic Audit Chaining (SELECT FOR UPDATE -> Append -> COMMIT) |
 |     +-----------------------------> [ PostgreSQL egress_audit_logs ]     |
 |                                                                          |
 |  6. Encrypted Archival & Presigned URL Generation                        |
@@ -68,7 +89,7 @@
 | **HIPAA 45 CFR § 164.514(b)** | Safe Harbor 18 Direct Identifiers | Deterministic suppression of all 18 identifiers; MRNs salted with HMAC-SHA256. |
 | **HIPAA Safe Harbor** | Temporal Data Minimization | Birth dates and encounter dates truncated strictly to year (YYYY). |
 | **DPDP Act 2023 (Sec. 6 & 7)** | Purpose Limitation | Requests rejected unless explicit `purpose` is defined and logged. |
-| **DPDP Act 2023 / HIPAA** | Non-Repudiation & Audit Trail | Immutable `egress_audit_logs` table storing SHA-256 payload checksums. |
+| **DPDP Act 2023 / HIPAA** | Non-Repudiation & Audit Trail | Merkle-lite hash chain in `egress_audit_logs` linking `prev_hash` to `record_hash`. |
 | **HIPAA Security Rule** | Transmission & Storage Security | TLS 1.3 in transit + AWS S3 AES-256 at rest with expiring presigned links. |
 | **Data Minimization** | Retention Limits | S3 lifecycle policies automatically expire and delete export objects after 30 days. |
 
@@ -79,8 +100,8 @@
 ```text
 aegisgate/
 ├── database/
-│   ├── schema.sql           # PostgreSQL table schemas, indices, and constraints
-│   └── seeds.sql            # Synthetic, fictitious clinical test records
+│   ├── schema.sql           # DDL: PostgreSQL table schemas, indices, and constraints
+│   └── seeds.sql            # DML: 10 diverse synthetic clinical test records
 ├── api/
 │   ├── src/
 │   │   ├── config/
@@ -91,6 +112,7 @@ aegisgate/
 │   │   │   └── egressRoutes.js       # Express route handlers
 │   │   ├── services/
 │   │   │   ├── aiSanitizerService.js # Gemini 3.5 Flash Lite integration & retry logic
+│   │   │   ├── auditService.js       # SHA-256 cryptographic chaining & ledger verification
 │   │   │   ├── maskingService.js     # Deterministic cryptographic masking
 │   │   │   └── s3Service.js          # AWS SDK v3 S3 upload & presigned URL generator
 │   │   └── server.js        # Application entrypoint
@@ -179,7 +201,7 @@ curl -X POST http://localhost:5000/api/v1/egress/export \
   }'
 ```
 
-#### Example Sanitized Output:
+#### Example Response:
 
 ```json
 {
@@ -219,7 +241,40 @@ curl -X POST http://localhost:5000/api/v1/egress/export \
 
 ---
 
-### 2. Query Audit Log History
+### 2. Verify Cryptographic Audit Chain Integrity
+
+**Endpoint:** `GET /api/v1/egress/audit/verify`
+
+Validates that every row in the audit log is cryptographically chained to its predecessor and that no payload has been modified post-export.
+
+```bash
+curl http://localhost:5000/api/v1/egress/audit/verify
+```
+
+#### Example Response (Valid State):
+
+```json
+{
+  "verified": true,
+  "chainLength": 8,
+  "headHash": "9b12a8f8d0e764724b910e53186fb52a0a383d6a0cfd0342b4b2075f928e078c",
+  "message": "Cryptographic chain verification passed. Zero tampering detected."
+}
+```
+
+#### Example Response (Tampered State):
+
+```json
+{
+  "verified": false,
+  "tamperedAuditId": 3,
+  "reason": "Data tampering detected at audit_id 3. Payload hash mismatch."
+}
+```
+
+---
+
+### 3. Query Audit Log History
 
 **Endpoint:** `GET /api/v1/egress/audit-logs`  
 **Query Parameters (Optional):** `?exportUuid=<UUID>`
