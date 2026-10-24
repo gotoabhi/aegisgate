@@ -9,6 +9,8 @@
 
 **AegisGate** is a production-grade backend compliance gateway designed to safely de-identify and egress clinical trial and patient datasets to third-party research entities (e.g., Clinical Research Organizations / CROs). It enforces the **HIPAA Safe Harbor Method (45 CFR § 164.514)** and **India's Digital Personal Data Protection (DPDP) Act, 2023** via a dual-tier redaction pipeline, cryptographic pseudonymization, Merkle/blockchain-lite cryptographic audit hash chaining, and encrypted AWS S3 delivery.
 
+**AegisGate** is an open-source project. The name AegisGate is not a registered trademark.
+
 ---
 
 ## Key Features
