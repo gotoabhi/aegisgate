@@ -1,9 +1,17 @@
+/**
+ * @fileoverview Contextual AI De-identification Engine (Tier 2).
+ * 
+ * Employs LLM in-context extraction to redact unstructured clinical notes
+ * while maintaining clinical invariants (dosages, ICD-10, vitals, lab markers).
+ */
+
 const { GoogleGenAI } = require('@google/genai');
 
 const aiClient = process.env.GEMINI_API_KEY
   ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
   : null;
 
+/** @type {string} Regulatory prompt enforcing zero clinical loss and strict JSON schema output */
 const SYSTEM_PROMPT = `You are a clinical compliance engine enforcing HIPAA Safe Harbor (45 CFR § 164.514) and India's DPDP Act, 2023.
 Task: De-identify the provided clinical free-text note.
 
@@ -18,6 +26,12 @@ Mandatory Rules:
   ]
 }`;
 
+/**
+ * Deterministic regex fallback executed when LLM endpoint is unconfigured, throttled, or fails.
+ *
+ * @param {string} noteText - Raw clinical note.
+ * @returns {{sanitizedText: string, redactedEntities: Array<{original: string, category: string, replacement: string}>}}
+ */
 const fallbackSanitization = (noteText) => {
   return {
     sanitizedText: noteText
@@ -27,6 +41,13 @@ const fallbackSanitization = (noteText) => {
   };
 };
 
+/**
+ * Parses unstructured clinical free text and replaces identifying personal tokens with categorical tags.
+ * Preserves clinical diagnostics, dosages, vitals, and procedures verbatim.
+ *
+ * @param {string} clinicalNotes - Raw unstructured physician notes from EHR.
+ * @returns {Promise<{sanitizedText: string, redactedEntities: Array<{original: string, category: string, replacement: string}>}>}
+ */
 const deidentifyClinicalNote = async (clinicalNotes) => {
   if (!clinicalNotes?.trim()) {
     return { sanitizedText: '', redactedEntities: [] };

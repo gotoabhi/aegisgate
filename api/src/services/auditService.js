@@ -1,7 +1,33 @@
+/**
+ * @fileoverview Cryptographic Audit & Non-Repudiation Ledger Service.
+ * 
+ * Implements a Merkle-lite hash-chained append ledger for compliance logs.
+ * Guarantees tamper-evident traceability under HIPAA Security Rule (§ 164.312(b))
+ * and India DPDP Act audit mandates.
+ */
+
 const crypto = require('crypto');
 
+/** @type {string} 64-character zero string representing the cryptographic genesis anchor */
 const GENESIS_BLOCK_HASH = '0'.repeat(64);
 
+/**
+ * Computes a deterministic SHA-256 seal for an audit record payload.
+ * 
+ * Normalizes and delimits all fields to guarantee byte-for-byte reproducibility
+ * between insertion time and subsequent verification passes.
+ *
+ * @param {Object} params
+ * @param {string} params.prevHash - Hex digest of the preceding audit record or GENESIS_BLOCK_HASH.
+ * @param {string} params.exportUuid - UUID identifying the export egress batch.
+ * @param {string} params.requesterId - Identifier of the requesting research/CRO entity.
+ * @param {string} params.purpose - Declared clinical or research justification (DPDP Sec 6/7).
+ * @param {string} params.framework - Active regulatory framework (e.g., 'HIPAA_SAFE_HARBOR').
+ * @param {number|string} params.patientId - Database identifier for the subject record.
+ * @param {string} params.sanitizedNoteHash - SHA-256 digest of the de-identified clinical text.
+ * @param {string} params.timestamp - ISO 8601 UTC timestamp of record creation.
+ * @returns {string} 64-character SHA-256 hexadecimal hash string.
+ */
 const computeRecordHash = (params) => {
   const {
     prevHash,
@@ -30,6 +56,25 @@ const computeRecordHash = (params) => {
   return crypto.createHash('sha256').update(payload).digest('hex');
 };
 
+/**
+ * Appends a chained, tamper-evident audit record within an active database transaction.
+ * 
+ * Enforces an exclusive pessimistic lock (`SELECT ... FOR UPDATE`) on the head row
+ * to serialize concurrent egress requests and prevent hash-chain bifurcation.
+ *
+ * @param {import('pg').PoolClient} client - An active PostgreSQL transaction client.
+ * @param {Object} entry - Audit metadata and redaction telemetry.
+ * @param {string} entry.exportUuid - Unique batch egress identifier.
+ * @param {string} entry.requesterId - Identity of the egress caller.
+ * @param {string} entry.purpose - Specific business or research purpose.
+ * @param {string} entry.framework - Target compliance standard.
+ * @param {number} entry.patientId - Internal ID of the exported patient.
+ * @param {Array<Object>} entry.fieldsRedacted - Array of redaction telemetry items.
+ * @param {boolean} entry.aiSanitizationApplied - Flag indicating Tier 2 AI involvement.
+ * @param {string} entry.sanitizedNoteHash - SHA-256 seal of the scrubbed clinical notes.
+ * @returns {Promise<{audit_id: number, record_hash: string}>} Inserted row identifier and computed hash.
+ * @throws {Error} Propagates query or transactional failures.
+ */
 const appendChainedAuditLog = async (client, entry) => {
   const {
     exportUuid,
@@ -42,7 +87,7 @@ const appendChainedAuditLog = async (client, entry) => {
     sanitizedNoteHash,
   } = entry;
 
-  // Prevent concurrency bifurcations across parallel egress exports
+  // Lock the latest audit record to prevent race conditions during concurrent egress batches
   const { rows } = await client.query(
     'SELECT record_hash FROM egress_audit_logs ORDER BY audit_id DESC LIMIT 1 FOR UPDATE'
   );
@@ -88,8 +133,18 @@ const appendChainedAuditLog = async (client, entry) => {
   return result.rows[0];
 };
 
+/**
+ * Traverses the complete audit ledger from genesis to head, verifying chain continuity and payload fidelity.
+ *
+ * Checks two fundamental cryptographic invariants per block:
+ * 1. Current block's `prev_hash` strictly equals previous block's `record_hash`.
+ * 2. Re-computed hash of current payload fields matches stored `record_hash`.
+ *
+ * @param {import('pg').PoolClient|import('pg').Pool} client - Database connection instance.
+ * @returns {Promise<{verified: boolean, chainLength: number, headHash?: string, tamperedAuditId?: number, reason?: string, message?: string}>}
+ */
 const verifyAuditChainIntegrity = async (client) => {
-  // Query deterministic UTC formatted ISO string to avoid Node Date rounding discrepancies
+  // Query ISO string deterministically in UTC via SQL to prevent Node.js Date formatting drift
   const { rows } = await client.query(`
     SELECT audit_id, export_uuid, requester_id, purpose, compliance_framework,
            patient_id, sanitized_note_hash, prev_hash, record_hash,
@@ -109,7 +164,7 @@ const verifyAuditChainIntegrity = async (client) => {
       return {
         verified: false,
         tamperedAuditId: row.audit_id,
-        reason: `Broken chain pointer at audit record ${row.audit_id}.`,
+        reason: `Broken chain pointer at audit record ${row.audit_id}. Expected prev_hash '${expectedPrevHash}', encountered '${row.prev_hash}'.`,
       };
     }
 

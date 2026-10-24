@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Egress Gateway Orchestrator Controller.
+ * 
+ * Coordinates Tier 1 deterministic masking, Tier 2 AI de-identification,
+ * cryptographic audit append chaining, and optional AWS S3 archival.
+ */
+
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/db');
@@ -6,6 +13,18 @@ const { deidentifyClinicalNote } = require('../services/aiSanitizerService');
 const { uploadExportBundle } = require('../services/s3Service');
 const { appendChainedAuditLog, verifyAuditChainIntegrity } = require('../services/auditService');
 
+/**
+ * Transforms an encounter record through the sanitization pipeline and logs cryptographic audit trail.
+ *
+ * @param {import('pg').PoolClient} client - Active transactional client.
+ * @param {Object} row - Relational row combining patient and encounter data.
+ * @param {Object} exportMeta - Metadata parameters identifying the egress batch.
+ * @param {string} exportMeta.exportUuid - Unique batch UUID.
+ * @param {string} exportMeta.requesterId - Requester identity.
+ * @param {string} exportMeta.purpose - Declared clinical/research purpose.
+ * @param {string} exportMeta.framework - Compliance regulatory standard.
+ * @returns {Promise<Object>} De-identified clinical encounter object.
+ */
 const transformEncounterRow = async (client, row, exportMeta) => {
   const { sanitizedText, redactedEntities } = await deidentifyClinicalNote(row.clinical_notes);
   const sanitizedNoteHash = crypto.createHash('sha256').update(sanitizedText).digest('hex');
@@ -33,6 +52,15 @@ const transformEncounterRow = async (client, row, exportMeta) => {
   };
 };
 
+/**
+ * Handles HTTP POST request to export compliant patient cohort data.
+ * Executes within an isolated database transaction to guarantee ledger consistency.
+ *
+ * @route POST /api/v1/egress/export
+ * @param {import('express').Request} req - Express request object containing body parameters.
+ * @param {import('express').Response} res - Express response object.
+ * @returns {Promise<import('express').Response>} HTTP response with compliant egress manifest.
+ */
 const exportPatientData = async (req, res) => {
   const { requesterId, purpose, framework, patientIds } = req.body;
 
@@ -108,6 +136,14 @@ const exportPatientData = async (req, res) => {
   }
 };
 
+/**
+ * Retrieves audit log records, optionally filtered by export UUID.
+ *
+ * @route GET /api/v1/egress/audit-logs
+ * @param {import('express').Request} req - Query params: exportUuid (optional).
+ * @param {import('express').Response} res - Express response object.
+ * @returns {Promise<import('express').Response>}
+ */
 const getAuditLogs = async (req, res) => {
   const { exportUuid } = req.query;
   const dbClient = await pool.connect();
@@ -128,6 +164,14 @@ const getAuditLogs = async (req, res) => {
   }
 };
 
+/**
+ * Validates the cryptographic integrity of the entire audit hash chain.
+ *
+ * @route GET /api/v1/egress/audit/verify
+ * @param {import('express').Request} _req
+ * @param {import('express').Response} res
+ * @returns {Promise<import('express').Response>} HTTP 200 on valid chain, HTTP 409 on tampering detection.
+ */
 const verifyChain = async (_req, res) => {
   const dbClient = await pool.connect();
   try {
