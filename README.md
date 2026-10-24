@@ -13,6 +13,12 @@
 
 ---
 
+**Disclaimer**
+
+This project is for educational and demonstration purposes. It is not a substitute for certified HIPAA compliance software and has not undergone regulatory audit. Do not use with real patient data without appropriate legal and security review.
+
+---
+
 ## Key Features
 
 - **Dual-Tier Sanitization Engine:**
