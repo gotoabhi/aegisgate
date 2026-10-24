@@ -1,0 +1,13 @@
+# Environment & Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Docker & OS
+.DS_Store
+Thumbs.db
