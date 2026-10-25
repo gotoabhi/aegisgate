@@ -5,11 +5,22 @@
  * while maintaining clinical invariants (dosages, ICD-10, vitals, lab markers).
  */
 
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const aiClient = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+const genAI = process.env.GEMINI_API_KEY
+  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
   : null;
+
+/**
+ * Active model pool matching Google API requirements:
+ * 1. gemini-3.5-flash-lite (fastest, optimized for JSON extraction)
+ * 2. gemini-3.8-flash (standard high-throughput flagship)
+ */
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL,
+  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
+].filter(Boolean);
 
 /** @type {string} Regulatory prompt enforcing zero clinical loss and strict JSON schema output */
 const SYSTEM_PROMPT = `You are a clinical compliance engine enforcing HIPAA Safe Harbor (45 CFR § 164.514) and India's DPDP Act, 2023.
@@ -27,7 +38,7 @@ Mandatory Rules:
 }`;
 
 /**
- * Deterministic regex fallback executed when LLM endpoint is unconfigured, throttled, or fails.
+ * Deterministic regex fallback executed when LLM endpoints fail.
  *
  * @param {string} noteText - Raw clinical note.
  * @returns {{sanitizedText: string, redactedEntities: Array<{original: string, category: string, replacement: string}>}}
@@ -43,7 +54,6 @@ const fallbackSanitization = (noteText) => {
 
 /**
  * Parses unstructured clinical free text and replaces identifying personal tokens with categorical tags.
- * Preserves clinical diagnostics, dosages, vitals, and procedures verbatim.
  *
  * @param {string} clinicalNotes - Raw unstructured physician notes from EHR.
  * @returns {Promise<{sanitizedText: string, redactedEntities: Array<{original: string, category: string, replacement: string}>}>}
@@ -53,29 +63,38 @@ const deidentifyClinicalNote = async (clinicalNotes) => {
     return { sanitizedText: '', redactedEntities: [] };
   }
 
-  if (!aiClient) {
+  if (!genAI) {
     return fallbackSanitization(clinicalNotes);
   }
 
-  try {
-    const response = await aiClient.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `${SYSTEM_PROMPT}\n\nClinical Note:\n"""${clinicalNotes}"""`,
-      config: {
-        responseMimeType: 'application/json',
-        temperature: 0.1,
-      },
-    });
+  const modelPool = [...new Set(CANDIDATE_MODELS)];
 
-    const parsed = JSON.parse(response.text.trim());
-    return {
-      sanitizedText: parsed.sanitizedText || clinicalNotes,
-      redactedEntities: Array.isArray(parsed.redactedEntities) ? parsed.redactedEntities : [],
-    };
-  } catch (error) {
-    console.error('LLM de-identification failed, routing through fallback regex parser:', error.message);
-    return fallbackSanitization(clinicalNotes);
+  for (const modelName of modelPool) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+        },
+        systemInstruction: SYSTEM_PROMPT,
+      });
+
+      const result = await model.generateContent(`Clinical Note:\n"""${clinicalNotes}"""`);
+      const responseText = result.response.text();
+      const parsed = JSON.parse(responseText.trim());
+
+      return {
+        sanitizedText: parsed.sanitizedText || clinicalNotes,
+        redactedEntities: Array.isArray(parsed.redactedEntities) ? parsed.redactedEntities : [],
+      };
+    } catch (error) {
+      console.warn(`Model '${modelName}' attempt failed: ${error.message}. Shifting to fallback candidate...`);
+    }
   }
+
+  console.warn('[AegisGate Notice] LLM models exhausted. Using deterministic fallback.');
+  return fallbackSanitization(clinicalNotes);
 };
 
 module.exports = {
