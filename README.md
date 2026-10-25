@@ -2,6 +2,7 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-v20+-22863a.svg)](https://nodejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
+[![Google Gemini](https://img.shields.io/badge/Google%20Gemini-3.5%20%7C%203.8%20Flash-orange.svg)](https://ai.google.dev/)
 [![AWS S3](https://img.shields.io/badge/AWS-S3%20SSE--AES256-ff9900.svg)](https://aws.amazon.com/s3/)
 [![Terraform](https://img.shields.io/badge/IaC-Terraform-623ce4.svg)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
