@@ -1,229 +1,189 @@
-# AegisGate — Automated Healthcare Compliance & Data Egress Gateway
+# AegisGate — Healthcare Egress & Compliance Gateway
 
-[![Node.js](https://img.shields.io/badge/Node.js-v20+-green.svg)](https://nodejs.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
-[![Google Gemini](https://img.shields.io/badge/AI-Gemini%203.5%20Flash%20Lite-orange.svg)](https://ai.google.dev/)
-[![AWS S3](https://img.shields.io/badge/AWS-S3%20SSE--AES256-yellow.svg)](https://aws.amazon.com/s3/)
-[![Terraform](https://img.shields.io/badge/IaC-Terraform-purple.svg)](https://www.terraform.io/)
+[![Node.js](https://img.shields.io/badge/Node.js-v20+-22863a.svg)](https://nodejs.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
+[![AWS S3](https://img.shields.io/badge/AWS-S3%20SSE--AES256-ff9900.svg)](https://aws.amazon.com/s3/)
+[![Terraform](https://img.shields.io/badge/IaC-Terraform-623ce4.svg)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+AegisGate is an API gateway that sanitizes relational clinical databases and unorganized physician notes before exporting cohorts to third-party research teams (CROs). It enforces the de-identification standards required by **HIPAA Safe Harbor (45 CFR § 164.514)** and **India's DPDP Act, 2023**.
 
-**AegisGate** is a production-grade backend compliance gateway designed to safely de-identify and egress clinical trial and patient datasets to third-party research entities (e.g., Clinical Research Organizations / CROs). It enforces the **HIPAA Safe Harbor Method (45 CFR § 164.514)** and **India's Digital Personal Data Protection (DPDP) Act, 2023** via a dual-tier redaction pipeline, cryptographic pseudonymization, Merkle/blockchain-lite cryptographic audit hash chaining, and encrypted AWS S3 delivery.
+The gateway couples deterministic masking with contextual LLM entity redaction, records every transaction into a hash-chained audit ledger to detect tampering, and uploads encrypted export packages directly to S3 with short-lived presigned download URLs.
 
-**AegisGate** is an open-source project. The name AegisGate is not a registered trademark.
-
----
-
-**Disclaimer**
-
-This project is for educational and demonstration purposes. It is not a substitute for certified HIPAA compliance software and has not undergone regulatory audit. Do not use with real patient data without appropriate legal and security review.
+> **Disclaimer:** This software is an engineering reference implementation built for demonstration and evaluation. It has not undergone formal third-party regulatory certification. Do not connect to production clinical environments without internal security and compliance review.
 
 ---
 
-## 📸 Live Gateway Execution & Cryptographic Verification
+## Technical Overview
 
-A live capture of the AegisGate runtime environment executing compliant patient data egress and verifying cryptographic audit hash chain continuity:
-
-<p align="center">
-  <img src="docs/demo-desk.png" alt="AegisGate Live Execution & Cryptographic Verification" width="900" />
-</p>
-
----
-
-## Key Features
-
-
-
-- **Dual-Tier Sanitization Engine:**
-  - **Tier 1 (Deterministic / Microsecond Latency):** Synchronous scrubbing of relational columns using Node.js `crypto` (HMAC-SHA256 for MRNs, date truncation to year, stripping direct identifiers like Aadhaar, phone, and email).
-  - **Tier 2 (AI Contextual Redaction):** High-throughput NLP redaction via Google Gemini (`gemini-3.5-flash-lite`) enforcing strict JSON output schemas. Replaces names, relations, locations, and facilities with categorical tags (`[PATIENT_NAME]`, `[FAMILY_MEMBER]`) while strictly preserving clinical parameters (diagnoses, staging, ICD-10 codes, medication names, and dosages).
-- **Cryptographic Audit Hash Chaining (Non-Repudiation & Tamper-Evidence):**
-  - **Immutable Ledger:** Every audit row computes a cryptographic SHA-256 seal combining the prior row's `record_hash` (`prev_hash`), export metadata, sanitized payload digest, and timestamp.
-  - **Concurrency Safety:** Row-level locking (`SELECT ... FOR UPDATE`) prevents race conditions and chain bifurcation during concurrent multi-patient exports.
-  - **Zero-Trust Audit Verification:** Dedicated `GET /api/v1/egress/audit/verify` endpoint traverses the ledger from the genesis block to head, instantly pinpointing any manual alteration, truncation, or payload tampering.
-- **Compliance & Governance:**
-  - **Purpose Limitation:** Enforces mandatory `purpose` validation on all egress requests under DPDP Act provisions.
-- **Secure Cloud Archival (Zero-Cost Free Tier Eligible):**
-  - Exports encrypted at rest using Amazon S3-managed keys (`SSE-S3 AES-256`).
-  - Delivers temporary, time-limited presigned URLs (3600-second TTL) rather than raw public endpoints.
-- **Infrastructure as Code (IaC):**
-  - Includes Terraform configurations with S3 lifecycle policies (30-day auto-expiration) and least-privilege IAM policies.
-
----
-
-## Cryptographic Hash Chaining Mechanism
+Exporting clinical datasets for research requires balancing two competing constraints:
+1. **Privacy Invariants:** All direct identifiers and non-year dates must be stripped or masked to prevent re-identification.
+2. **Clinical Utility:** Diagnostic terms, ICD-10 codes, vital signs, and drug regimens inside doctor notes must remain intact for research to be useful.
 
 ```text
-[ Genesis Block ]
-  prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-  record_hash = SHA256(prev_hash | export_uuid | requester_id | purpose | framework | patient_id | sanitized_note_hash | timestamp)
-         |
-         v
-[ Audit Row 1 ]
-  prev_hash = Genesis record_hash
-  record_hash = SHA256(prev_hash | Row 1 payload fields | timestamp)
-         |
-         v
-[ Audit Row N ] (Any retroactive tampering in Row 1..N breaks the chain and fails /audit/verify)
+Incoming Request (POST /export)
+  │
+  ├── 1. Tier 1: Deterministic Scrubbing (Node.js crypto)
+  │      ├── Drop direct identifiers (Name, Phone, Email, National IDs)
+  │      ├── Truncate timestamps & DOBs to UTC calendar year
+  │      └── HMAC-SHA256 hash on MRN (maintains cohort linkage across exports)
+  │
+  ├── 2. Tier 2: Contextual NLP Redaction (Google Gemini)
+  │      ├── In-context extraction of names, facilities, and transit details
+  │      ├── Strict categorical token substitution ([PATIENT_NAME], [FACILITY])
+  │      └── Automatic failover pool with regex fallback on upstream saturation
+  │
+  ├── 3. Cryptographic Audit Chaining (PostgreSQL)
+  │      ├── Acquire row lock (SELECT ... FOR UPDATE) on ledger head
+  │      ├── Compute SHA-256 seal: H(prev_hash | payload_digest | metadata | ts)
+  │      └── Commit ledger entry within the same database transaction
+  │
+  └── 4. Encrypted Cloud Delivery (AWS S3)
+         ├── Upload JSON manifest with SSE-AES256 encryption
+         └── Generate 1-hour expiring presigned GET URL for research access
 ```
 
 ---
 
-## Architecture & Data Flow
+## Architectural Decisions & Trade-Offs
 
-```text
-[ Client / CRO ]
-       |
-       |  1. POST /api/v1/egress/export (purpose, requesterId, patientIds)
-       v
-+--------------------------------------------------------------------------+
-| Express Gateway API (Node.js)                                            |
-|                                                                          |
-|  2. Query Patients & Encounters                                          |
-|     +-----------------------------> [ PostgreSQL (securehealth_db) ]     |
-|                                                                          |
-|  3. [Tier 1] Deterministic Masking                                       |
-|     • Truncate DOB / Encounter Date to Year                              |
-|     • HMAC-SHA256 Hash on MRN & Aadhaar                                  |
-|     • Strip Name, Phone, Email, Address                                  |
-|                                                                          |
-|  4. [Tier 2] Contextual LLM Sanitization                                 |
-|     • Structured prompt with clinical preservation rules                 |
-|     +-----------------------------> [ Gemini 3.5 Flash Lite API ]        |
-|                                                                          |
-|  5. Cryptographic Audit Chaining (SELECT FOR UPDATE -> Append -> COMMIT) |
-|     +-----------------------------> [ PostgreSQL egress_audit_logs ]     |
-|                                                                          |
-|  6. Encrypted Archival & Presigned URL Generation                        |
-|     +-----------------------------> [ AWS S3 (SSE-AES256) ]              |
-+--------------------------------------------------------------------------+
-       |
-       `--> Returns HTTP 200 OK with sanitized payload & S3 download URL
-```
+### Dual-Tier Pipeline
+Regular expressions and string searches fail on doctor notes because medical text is full of edge cases (e.g., confusing doctor names with syndrome names, or mistaking drug dosages for phone numbers). 
+* **Tier 1 (Relational Data):** Runs purely in memory using synchronous cryptographic hashing and field filters. Stripping direct columns here keeps costs low and guarantees direct PII never leaves the gateway boundary.
+* **Tier 2 (Free-Text Notes):** Routes clinical notes through `gemini-3.5-flash-lite` (with failover to `gemini-3.8-flash`) constrained by a low temperature (0.1) and a structured JSON schema. If the model endpoint is unavailable or returns 503/429 errors, the gateway degrades to deterministic regex filtering so outgoing exports are never left stalled.
+
+### Cryptographic Audit Ledger
+HIPAA Security Rule § 164.312(b) and DPDP Act provisions mandate non-repudiation for exported health data. Traditional log tables can be secretly altered by a rogue database admin (`UPDATE egress_audit_logs SET ...`).
+* To prevent this, AegisGate links each audit record to the hash of the preceding record (`prev_hash`).
+* Any retroactive update or row deletion breaks the mathematical hash chain.
+* **Concurrency Handling:** To avoid race conditions and chain splits when concurrent requests hit the gateway, the audit worker executes `SELECT record_hash FROM egress_audit_logs ORDER BY audit_id DESC LIMIT 1 FOR UPDATE`. This serializes ledger writes cleanly without requiring a slow, complex distributed lock manager.
 
 ---
 
-## Regulatory Compliance Matrix
+## Regulatory Alignment
 
-| Regulation / Standard | Requirement | AegisGate Implementation |
+| Standard | Legal Requirement | Implementation in AegisGate |
 | :--- | :--- | :--- |
-| **HIPAA 45 CFR § 164.514(b)** | Safe Harbor 18 Direct Identifiers | Deterministic suppression of all 18 identifiers; MRNs salted with HMAC-SHA256. |
-| **HIPAA Safe Harbor** | Temporal Data Minimization | Birth dates and encounter dates truncated strictly to year (YYYY). |
-| **DPDP Act 2023 (Sec. 6 & 7)** | Purpose Limitation | Requests rejected unless explicit `purpose` is defined and logged. |
-| **DPDP Act 2023 / HIPAA** | Non-Repudiation & Audit Trail | Merkle-lite hash chain in `egress_audit_logs` linking `prev_hash` to `record_hash`. |
-| **HIPAA Security Rule** | Transmission & Storage Security | TLS 1.3 in transit + AWS S3 AES-256 at rest with expiring presigned links. |
-| **Data Minimization** | Retention Limits | S3 lifecycle policies automatically expire and delete export objects after 30 days. |
+| **HIPAA § 164.514(b)** | Removal of 18 Safe Harbor identifiers | Deterministic omission of names, contacts, and addresses; MRN transformed via HMAC-SHA256 pepper. |
+| **HIPAA § 164.514(b)(2)** | Date minimization | Dates of birth and clinical encounter timestamps are truncated strictly to calendar year (`YYYY`). |
+| **DPDP Act (Sec. 6 & 7)** | Purpose limitation | Requests are rejected immediately unless accompanied by a declared research purpose string. |
+| **HIPAA § 164.312(b)** | Hardware/software audit controls | Hash-chained PostgreSQL ledger (`egress_audit_logs`) verified via `/api/v1/egress/audit/verify`. |
+| **HIPAA § 164.312(a)(2)** | Encryption at rest and in transit | TLS 1.3 enforced for endpoints; AWS S3 server-side encryption (`AES256`) for stored bundles. |
+| **Data Minimization** | Ephemeral storage | Presigned S3 URLs expire after 3,600 seconds; Terraform config provisions a 30-day object deletion rule. |
 
 ---
 
-## Project Structure
+## Repository Layout
 
 ```text
-aegisgate/
-├── database/
-│   ├── schema.sql           # DDL: PostgreSQL table schemas, indices, and constraints
-│   └── seeds.sql            # DML: 10 diverse synthetic clinical test records
 ├── api/
 │   ├── src/
 │   │   ├── config/
-│   │   │   └── db.js        # PostgreSQL pg connection pool
+│   │   │   └── db.js                 # PostgreSQL connection pool configuration
 │   │   ├── controllers/
-│   │   │   └── egressController.js   # Orchestrates sanitization, DB, and S3
+│   │   │   └── egressController.js   # Orchestrates sanitization, DB transactions, and S3
 │   │   ├── routes/
-│   │   │   └── egressRoutes.js       # Express route handlers
+│   │   │   └── egressRoutes.js       # Route definitions and parameter validators
 │   │   ├── services/
-│   │   │   ├── aiSanitizerService.js # Gemini 3.5 Flash Lite integration & retry logic
-│   │   │   ├── auditService.js       # SHA-256 cryptographic chaining & ledger verification
-│   │   │   ├── maskingService.js     # Deterministic cryptographic masking
-│   │   │   └── s3Service.js          # AWS SDK v3 S3 upload & presigned URL generator
-│   │   └── server.js        # Application entrypoint
-│   ├── .env.example         # Template for environment variables
-│   ├── Dockerfile           # Production container build
+│   │   │   ├── aiSanitizerService.js # Gemini NLP integration, failover pool, and regex fallback
+│   │   │   ├── auditService.js       # SHA-256 hash chaining and ledger integrity verification
+│   │   │   ├── maskingService.js     # Tier-1 HMAC pseudonymization and date truncation
+│   │   │   └── s3Service.js          # S3 client, AES-256 uploads, and presigned URL issuer
+│   │   └── server.js                 # Express server bootstrap and graceful shutdown hooks
+│   ├── Dockerfile
 │   └── package.json
-├── terraform/               # Infrastructure as Code (IaC)
-│   ├── main.tf              # S3 bucket, public access block, lifecycle & IAM policy
-│   ├── variables.tf         # AWS region, project naming, and retention settings
-│   └── outputs.tf           # Exported bucket details and credential references
-├── docker-compose.yml       # Multi-container orchestration (API + PostgreSQL)
-├── .gitignore               # Strict exclusion of .env, state, and credentials
-├── LICENSE                  # MIT License
-└── README.md
+├── database/
+│   ├── schema.sql                    # Relational tables, indexing, and audit ledger schema
+│   └── seeds.sql                     # Synthetic multi-patient clinical test fixtures
+├── docs/
+│   └── demo-desk.png                 # Terminal verification preview
+├── terraform/
+│   ├── main.tf                       # S3 bucket, least-privilege IAM, and lifecycle policies
+│   ├── variables.tf                  # Region, project naming, and retention parameters
+│   └── outputs.tf                    # Bucket identifiers and output ARNs
+└── docker-compose.yml                # Local orchestration for PostgreSQL and API services
 ```
 
 ---
 
-## Getting Started
+## Quickstart
 
 ### Prerequisites
+* [Docker and Docker Compose](https://docs.docker.com/get-docker/) **OR** Node.js v20+ and PostgreSQL 15+
+* A [Google AI Studio API Key](https://aistudio.google.com/)
+* AWS Credentials with S3 permissions *(optional; S3 uploads are skipped if keys are not provided)*
 
-- [Docker & Docker Compose](https://www.docker.com/) (recommended) **OR** [Node.js v20+](https://nodejs.org/) & [PostgreSQL 15+](https://www.postgresql.org/)
-- A [Google Gemini API Key](https://aistudio.google.com/)
-- An AWS Account (optional for cloud archival; S3 functionality is bypassed if credentials are not set)
+### 1. Run with Docker Compose
 
----
+```bash
+git clone https://github.com/gotoabhi/aegisgate.git
+cd aegisgate
 
-### Method A: Quickstart via Docker Compose (Recommended)
+# Set up environment variables
+cp api/.env.example api/.env
+```
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/gotoabhi/aegisgate.git
-   cd aegisgate
-   ```
+Open `api/.env` and provide your configuration:
+```env
+PORT=5000
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/securehealth_db
+PSEUDONYMIZATION_KEY=replace-with-a-random-secret-key-32-chars
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
 
-2. **Configure environment variables:**
-   ```bash
-   cp api/.env.example api/.env
-   ```
-   Open `api/.env` and insert your `GEMINI_API_KEY` and optional AWS credentials.
+Start the containers:
+```bash
+docker compose up --build
+```
+The gateway will start on `http://localhost:5000`.
 
-3. **Launch the stack:**
-   ```bash
-   docker compose up --build
-   ```
-   PostgreSQL will initialize with schemas and synthetic seeds, and the API gateway will start on port `5000`.
+### 2. Manual Local Setup (Alternative)
 
----
+```bash
+# Seed local database
+psql -U postgres -c "CREATE DATABASE securehealth_db;"
+psql -U postgres -d securehealth_db -f database/schema.sql
+psql -U postgres -d securehealth_db -f database/seeds.sql
 
-### Method B: Manual Local Setup
-
-1. **Database Setup:**
-   ```powershell
-   psql -U postgres -c "CREATE DATABASE securehealth_db;"
-   psql -U postgres -d securehealth_db -f database/schema.sql
-   psql -U postgres -d securehealth_db -f database/seeds.sql
-   ```
-
-2. **Install & Run Backend:**
-   ```powershell
-   cd api
-   npm install
-   cp .env.example .env
-   # Add your GEMINI_API_KEY and DB credentials in .env
-   npm run dev
-   ```
+# Install dependencies and start server
+cd api
+npm install
+npm run dev
+```
 
 ---
 
 ## API Usage & Endpoints
 
-### 1. Trigger Compliant Patient Data Egress
+### Live Execution Preview
 
-**Endpoint:** `POST /api/v1/egress/export`  
-**Headers:** `Content-Type: application/json`
+Below is a live trace running a compliant patient data export and executing a zero-trust cryptographic ledger verification:
+
+<p align="center">
+  <img src="docs/demo-terminal.png" alt="AegisGate Live Verification Trace" width="900" />
+</p>
+
+---
+
+### 1. Request Compliant Cohort Export
+
+**`POST /api/v1/egress/export`**
+
+Executes the dual-tier de-identification pipeline for specified patient IDs, writes an immutable audit record, and produces a sanitized JSON manifest.
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/egress/export \
   -H "Content-Type: application/json" \
   -d '{
     "requesterId": "cro-oncology-trial-402",
-    "purpose": "oncology_clinical_efficacy_review",
+    "purpose": "clinical_efficacy_review",
     "framework": "HIPAA_SAFE_HARBOR",
     "patientIds": [1, 2]
   }'
 ```
 
-#### Example Response:
-
+**Response (`200 OK`):**
 ```json
 {
   "success": true,
@@ -232,11 +192,11 @@ curl -X POST http://localhost:5000/api/v1/egress/export \
   "recordCount": 2,
   "s3Archive": {
     "s3Key": "exports/d82f7c04-5899-4a92-b4c1-6b834927cb78.json",
-    "presignedUrl": "https://aegisgate-exports-xxxx.s3.ap-south-1.amazonaws.com/exports/..."
+    "presignedUrl": "https://aegisgate-exports-prod.s3.ap-south-1.amazonaws.com/exports/..."
   },
   "data": [
     {
-      "pseudonymized_id": "a9bf8c1d3e...",
+      "pseudonymized_id": "a9bf8c1d3e874...",
       "birth_year": "1979",
       "gender": "Male",
       "state": "Uttar Pradesh",
@@ -248,7 +208,7 @@ curl -X POST http://localhost:5000/api/v1/egress/export \
           "diagnosis_name": "Epilepsy, unspecified",
           "systolic_bp": 128,
           "diastolic_bp": 82,
-          "sanitized_notes": "Patient [PATIENT_NAME] presented with recurring absence seizures. Accompanied by [FAMILY_MEMBER]. Prescribed Levetiracetam 500mg PO BID and Clobazam 5mg QHS...",
+          "sanitized_notes": "Patient [PATIENT_NAME] presented with recurring absence seizures. Accompanied by [FAMILY_MEMBER]. Prescribed Levetiracetam 500mg PO BID...",
           "redactions": [
             { "original": "Vikram Malhotra", "category": "PATIENT_NAME", "replacement": "[PATIENT_NAME]" },
             { "original": "Sunita Malhotra", "category": "FAMILY_MEMBER", "replacement": "[FAMILY_MEMBER]" }
@@ -262,18 +222,17 @@ curl -X POST http://localhost:5000/api/v1/egress/export \
 
 ---
 
-### 2. Verify Cryptographic Audit Chain Integrity
+### 2. Verify Audit Ledger Integrity
 
-**Endpoint:** `GET /api/v1/egress/audit/verify`
+**`GET /api/v1/egress/audit/verify`**
 
-Validates that every row in the audit log is cryptographically chained to its predecessor and that no payload has been modified post-export.
+Traverses the hash chain from the genesis block (`0000...0000`) up to the current ledger head. It recalculates every record's SHA-256 digest to confirm no records have been altered, added, or deleted out of band.
 
 ```bash
-curl http://localhost:5000/api/v1/egress/audit/verify
+curl -s http://localhost:5000/api/v1/egress/audit/verify | jq
 ```
 
-#### Example Response (Valid State):
-
+**Response (Integrity Confirmed):**
 ```json
 {
   "verified": true,
@@ -283,22 +242,22 @@ curl http://localhost:5000/api/v1/egress/audit/verify
 }
 ```
 
-#### Example Response (Tampered State):
-
+**Response (Tampered Record Detected):**
 ```json
 {
   "verified": false,
   "tamperedAuditId": 3,
-  "reason": "Data tampering detected at audit_id 3. Payload hash mismatch."
+  "reason": "Cryptographic payload mismatch at audit record 3."
 }
 ```
 
 ---
 
-### 3. Query Audit Log History
+### 3. Retrieve Audit Trail
 
-**Endpoint:** `GET /api/v1/egress/audit-logs`  
-**Query Parameters (Optional):** `?exportUuid=<UUID>`
+**`GET /api/v1/egress/audit-logs`**
+
+Returns historical export logs. Supports filtering by export batch identifier: `?exportUuid=d82f7c04-...`
 
 ```bash
 curl http://localhost:5000/api/v1/egress/audit-logs
@@ -306,9 +265,13 @@ curl http://localhost:5000/api/v1/egress/audit-logs
 
 ---
 
-## Infrastructure as Code (Terraform)
+## Cloud Infrastructure (Terraform)
 
-To provision the production-ready AWS S3 compliance bucket, retention policies, and IAM permissions:
+The `terraform/` directory provisions the production AWS S3 compliance bucket and policy controls:
+* **Default Server-Side Encryption:** Enforces `AES256` encryption at rest on all written objects.
+* **Public Access Block:** Hard-blocks all public reads, writes, and bucket policies.
+* **Lifecycle Rules:** Configures an automatic expiration rule to delete exported datasets after 30 days to enforce storage minimization.
+* **Least Privilege IAM:** Limits API credentials exclusively to `s3:PutObject` and `s3:GetObject` on the `/exports/*` prefix.
 
 ```bash
 cd terraform
@@ -317,7 +280,7 @@ terraform plan
 terraform apply
 ```
 
-To tear down all provisioned cloud resources:
+To tear down cloud infrastructure:
 ```bash
 terraform destroy
 ```
@@ -326,4 +289,4 @@ terraform destroy
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This repository is distributed under the terms of the [MIT License](LICENSE).
