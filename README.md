@@ -1,5 +1,6 @@
 # AegisGate — Healthcare Egress & Compliance Gateway
 
+[![CI](https://github.com/gotoabhi/aegisgate/actions/workflows/ci.yml/badge.svg)](https://github.com/gotoabhi/aegisgate/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-v20+-22863a.svg)](https://nodejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-3.5%20%7C%203.8%20Flash-orange.svg)](https://ai.google.dev/)
