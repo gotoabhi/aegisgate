@@ -7,6 +7,9 @@
 [![Terraform](https://img.shields.io/badge/IaC-Terraform-623ce4.svg)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+📖 **Technical Deep-Dive:** [Why Healthcare Data Egress Is a Compliance Minefield](
+https://medium.com/@abhishekapandey/healthcare-data-egress-is-a-compliance-minefield-i-built-a-gateway-to-fix-it-e8a315d41927?sharedUserId=abhishekapandey)
+
 AegisGate is an API gateway that sanitizes relational clinical databases and unorganized physician notes before exporting cohorts to third-party research teams (CROs). It enforces the de-identification standards required by **HIPAA Safe Harbor (45 CFR § 164.514)** and **India's DPDP Act, 2023**.
 
 The gateway couples deterministic masking with contextual LLM entity redaction, records every transaction into a hash-chained audit ledger to detect tampering, and uploads encrypted export packages directly to S3 with short-lived presigned download URLs.
@@ -172,6 +175,15 @@ Below is a live trace running a compliant patient data export and executing a ze
 **`POST /api/v1/egress/export`**
 
 Executes the dual-tier de-identification pipeline for specified patient IDs, writes an immutable audit record, and produces a sanitized JSON manifest.
+
+#### Request Body Parameters
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `requesterId` | `string` | **Yes** | Identifier of the requesting research team or CRO. |
+| `purpose` | `string` | **Yes** | Purpose string enforced under DPDP Act provisions. |
+| `framework` | `string` | No | Regulatory pipeline to enforce: `HIPAA_SAFE_HARBOR` *(default)* or `DPDP_2023`. |
+| `patientIds` | `number[]` | **Yes** | Array of database patient IDs to include in the export bundle. |
 
 ```bash
 curl -X POST http://localhost:5000/api/v1/egress/export \
