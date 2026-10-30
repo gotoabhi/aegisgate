@@ -1,21 +1,91 @@
-# Environment & Secrets
+# ==========================================
+# Dependencies & Package Managers
+# ==========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Explicitly ensure package-lock.json is tracked for CI/CD consistency
+!package-lock.json
+!api/package-lock.json
+
+# ==========================================
+# Environment Variables, Secrets & API Keys
+# ==========================================
 .env
 .env.local
+.env.*.local
+*.env
+!*.env.example
+
+# Credentials & Cloud Auth
+credentials.json
 *.pem
 *.key
+*.cert
+aws-credentials/
 
-# Dependencies
-node_modules/
-package-lock.json
+# ==========================================
+# Runtime, Logs & Process Artifacts
+# ==========================================
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
 
-# Docker & OS
-.DS_Store
-Thumbs.db
+# Coverage & Testing
+coverage/
+.nyc_output/
+*.lcov
 
-# Terraform
-.terraform/
+# ==========================================
+# Terraform & Infrastructure
+# ==========================================
+**/.terraform/*
 *.tfstate
 *.tfstate.*
+crash.log
 *.tfvars
 *.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 .terraform.lock.hcl
+
+# ==========================================
+# Temporary Files, Dumps & Backups
+# ==========================================
+*.tmp
+*.temp
+*.swp
+*.bak
+dump.rdb
+*.sql.gz
+*.tar.gz
+
+# Local Egress / Exports generated during testing
+exports/
+temp_egress/
+*.export.json
+
+# ==========================================
+# IDE & System Files
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# VS Code / JetBrains / Vim
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*~
