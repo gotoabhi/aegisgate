@@ -66,7 +66,7 @@ jobs:
         run: |
           timeout 10s node src/server.js &
           sleep 5
-          curl -f http://localhost:5000/api/v1/egress/audit-logs || true
+          curl -f http://localhost:5000/api/v1/egress/audit-logs
           kill %1 || true
 
       - name: Validate database schema integrity
